@@ -81,7 +81,6 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None, seuil_prox
         prev = prev_df.copy()
         prev["Date"] = pd.to_datetime(prev["Date"])
         for _, r in prev.iterrows():
-            # inclure période précédente dans historique pour la règle de distance
             historique[r["Médecin"]].append(r["Date"])
     processed = set()
     logs = []
@@ -96,29 +95,23 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None, seuil_prox
         if pd.notna(wid) and (date != hardest[wid] or wid in processed):
             continue
 
-        # Sélection pour week-end (3 OUI > 2+1 PRN > fallback)
         sel_nom, raison = None, None
         if pd.notna(wid):
             grp = df_gardes[df_gardes["weekend_id"] == wid]
             statuts = {m: grp[m].astype(str).str.upper().tolist() for m in meds}
-            # 3 OUI
             c3 = [(m, scores[m]) for m, sts in statuts.items() if sts.count("OUI") == 3]
             if c3:
                 sel_nom = min(c3, key=lambda x: x[1])[0]
                 raison = "3 OUI week-end"
             else:
-                # 2 OUI + 1 PRN
-                c2 = [(m, scores[m]) for m, sts in statuts.items() 
-                      if sts.count("OUI")==2 and sts.count("PRN")==1]
+                c2 = [(m, scores[m]) for m, sts in statuts.items() if sts.count("OUI")==2 and sts.count("PRN")==1]
                 if c2:
                     sel_nom = min(c2, key=lambda x: x[1])[0]
                     raison = "2 OUI + 1 PRN week-end"
 
-        # Sélection standard si pas dans week-end
         sel_score_before = None
         if not sel_nom:
-            meds_row = [(m, str(row[m]).upper(), scores.get(m,0), historique[m].copy()) 
-                        for m in meds if str(row[m]).strip().upper() != "NON"]
+            meds_row = [(m, str(row[m]).upper(), scores.get(m,0), historique[m].copy()) for m in meds if str(row[m]).strip().upper() != "NON"]
             pool_oui = [c for c in meds_row if c[1] == "OUI"]
             pool_prn = [c for c in meds_row if c[1] == "PRN"]
             sel = None
@@ -138,13 +131,11 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None, seuil_prox
         scores[sel_nom] = prev_score + pts
         historique[sel_nom].append(date)
 
-        # Log attribution principale
         log = {"Date": date, "Médecin": sel_nom,
                "Points jour": pts, "Score avant": prev_score,
                "Score après": scores[sel_nom], "Raison": raison}
         logs.append(log); assigns.append(log.copy())
 
-        # Groupement week-end
         if pd.notna(wid):
             for d in df_gardes[df_gardes["weekend_id"] == wid]["Date"]:
                 if d == date: continue
@@ -159,35 +150,23 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None, seuil_prox
     planning_df = pd.DataFrame(assigns)
     log_df = pd.DataFrame(logs)
 
-        # Mise à jour du pointage : tenir compte des 11 anciennes + actuelle
-    # Ancien score moyen sur 12 périodes
+    # Mise à jour du pointage : tenir compte des 11 anciennes + actuelle
     old_scores = pointage_df.set_index("MD")["Score actualisé"].to_dict()
-    # Points de la période précédente
     prev_points = defaultdict(int)
     prev_presence = defaultdict(bool)
     if prev_df is not None:
-        prev = prev_df.copy()
-        prev["Date"] = pd.to_datetime(prev["Date"])
-        for _, r in prev.iterrows():
+        prev2 = prev_df.copy(); prev2["Date"] = pd.to_datetime(prev2["Date"])
+        for _, r in prev2.iterrows():
             prev_points[r["Médecin"]] += points_map.get(r["Date"], 0)
             prev_presence[r["Médecin"]] = True
-    # Points de la période actuelle
     current_points = planning_df.groupby("Médecin")["Points jour"].sum().to_dict()
 
     rows = []
     for md, old_avg in old_scores.items():
-        # Somme des 12 anciennes périodes
         sum_old = old_avg * 12
-        # Somme sur 11 anciennes (on retire la plus ancienne réelle)
-        # Ici prev_points couvre la période précédente à retirer si présent
         sum_11 = sum_old - prev_points.get(md, 0)
-        # Total incluant période actuelle
         total = sum_11 + current_points.get(md, 0)
-        # Détermination du nombre de périodes de présence
-        # 11 anciennes (toutes présentes sauf si absences), +1 actuelle
-        # Si absent dans la période précédente, on a 11 présences max anciennes, sinon 12
         periods_present = 12 - (0 if prev_presence.get(md, False) else 1)
-        # Nouveau score = total / périodes présentes
         new_avg = total / periods_present if periods_present > 0 else 0
         rows.append({
             "MD": md,
@@ -202,4 +181,38 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None, seuil_prox
     return planning_df, log_df, new_pointage
 
 # --- Interface utilisateur ---
-... (rest unchanged)
+def main():
+    st.title("Planning de gardes")
+    st.markdown("Chargez un Excel avec onglets **Dispo Période**, **Pointage gardes**, **Gardes résidents**, et optionnel **Période précédente**.")
+    uploaded = st.file_uploader("Fichier Excel (.xlsx)", type=["xlsx"])
+    seuil = st.number_input("Seuil proximité (jours)", 1, 28, 6)
+    if uploaded:
+        xls = pd.ExcelFile(uploaded)
+        errs = validate_file(xls)
+        if errs:
+            st.error("Erreurs:\n" + "\n".join(errs))
+            return
+        dispo = xls.parse("Dispo Période")
+        pointage = xls.parse("Pointage gardes")
+        gardes = xls.parse("Gardes résidents")
+        prev = xls.parse("Période précédente") if "Période précédente" in xls.sheet_names else None
+
+        planning, logs, new_pointage = generate_planning(dispo, pointage, gardes, prev, seuil)
+
+        st.subheader("Planning de gardes (28 jours)")
+        st.dataframe(planning)
+        buf1=io.BytesIO(); planning.to_excel(buf1,index=False);buf1.seek(0)
+        st.download_button("Télécharger planning",buf1,"planning.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        st.subheader("Log détaillé")
+        st.dataframe(logs)
+        buf2=io.BytesIO(); logs.to_excel(buf2,index=False);buf2.seek(0)
+        st.download_button("Télécharger log",buf2,"log_gardes.xlsx","application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
+
+        st.subheader("Pointage mis à jour")
+        st.dataframe(new_pointage)
+        buf3=io.BytesIO(); new_pointage.to_excel(buf3,index=False);buf3.seek(0)
+        st.download_button("Télécharger pointage",buf3,"pointage_mis_a_jour.xlsx","application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
+
+if __name__ == "__main__":
+    main()
