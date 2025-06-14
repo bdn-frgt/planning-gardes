@@ -61,14 +61,14 @@ def create_template_excel(start_date: date,
         dispo_df[m] = "PRN"
     # Pointage gardes
     pt_df = pd.DataFrame({"MD": docs, "Score actualisé": [0] * len(docs)})
-    # Gardes résidents (prérempli dates)
+    # Gardes résidents
     gard_res_df = pd.DataFrame({"date": dates, "Points": ["" for _ in dates]})
-    # Période précédente (vide)
+    # Période précédente
     prev_df = pd.DataFrame(columns=["Date", "Médecin"])
     # Paramètres
     params_df = pd.DataFrame({
         "Paramètre": ["periods_ante","pts_sem_res","pts_sem_nores","pts_we_res","pts_we_nores"],
-        "Valeur": [periods_ante, pts_sem_res, pts_sem_nores, pts_we_res, pts_we_nores]
+        "Valeur": [periods_ante,pts_sem_res,pts_sem_nores,pts_we_res,pts_we_nores]
     })
     # Écriture Excel
     output = io.BytesIO()
@@ -80,24 +80,122 @@ def create_template_excel(start_date: date,
         params_df.to_excel(writer, sheet_name="Paramètres", index=False)
         workbook = writer.book
         ws = writer.sheets["Dispo Période"]
-        # validation OUI/PRN/NON pour chaque médecin
-        first_row = 1
-        last_row = total_days
         for col_idx in range(3, 3 + len(docs)):
             col_letter = chr(ord('A') + col_idx)
             ws.data_validation(
-                f"{col_letter}{first_row+1}:{col_letter}{last_row+1}",
-                {'validate': 'list', 'source': ['OUI','PRN','NON']}
+                f"{col_letter}2:{col_letter}{total_days+1}",
+                {
+                    'validate': 'list',
+                    'source': ['OUI', 'PRN', 'NON']
+                }
             )
     output.seek(0)
     return output
 
-# --- Implémentation de generate_planning (placeholder) ---
+# --- Implémentation complète de generate_planning ---
 def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
                       seuil_proximite=6, max_weekends=1, bonus_oui=5):
-    # Remplacez ce bloc par votre logique d'attribution complète
-    planning_df = pd.DataFrame()
-    log_df = pd.DataFrame()
+    dispo = dispo_df.copy()
+    dispo["Date"] = pd.to_datetime(dispo["Date"])
+    meds = DOCTORS
+    mask = ((dispo["Moment"].str.lower() == "soir") |
+            (dispo["Jour"].str.lower().isin(["samedi", "dimanche"])))
+    df_g = dispo[mask].copy()
+    grd = gardes_df.copy()
+    grd["date"] = pd.to_datetime(grd["date"])
+    points_map = grd.set_index("date")["Points"].to_dict()
+    df_g["Points jour"] = df_g["Date"].map(points_map).fillna(0).astype(int)
+    for s in ["OUI","PRN","NON"]:
+        df_g[f"nb_{s}"] = df_g[meds].apply(lambda r: sum(str(x).strip().upper()==s for x in r), axis=1)
+    def weekend_id(d):
+        wd = d.weekday()
+        if wd == 4: return d
+        if wd == 5: return d - timedelta(days=1)
+        if wd == 6: return d - timedelta(days=2)
+        return None
+    df_g["we_id"] = df_g["Date"].apply(weekend_id)
+    scores = pointage_df.set_index("MD")["Score actualisé"].to_dict()
+    history = defaultdict(list)
+    we_count = defaultdict(int)
+    if prev_df is not None:
+        prev_df["Date"] = pd.to_datetime(prev_df["Date"])
+        for _, r in prev_df.iterrows():
+            history[r["Médecin"]].append(r["Date"])
+            wid = weekend_id(r["Date"])
+            if wid is not None:
+                we_count[r["Médecin"]] += 1
+    plans = []
+    logs = []
+    # Attribution week-ends
+    for wid, grp in df_g[df_g["we_id"].notna()].groupby("we_id"):
+        dates = sorted(grp["Date"])
+        cands = []
+        for m in meds:
+            if we_count[m] >= max_weekends: continue
+            stats = [str(grp.loc[grp["Date"]==d, m].iloc[0]).strip().upper() for d in dates]
+            if stats.count("NON") == len(stats): continue
+            base = scores.get(m, 0)
+            bonus = stats.count("OUI") * bonus_oui
+            cands.append((m, base - bonus, stats))
+        if not cands: continue
+        sel = min(cands, key=lambda x: x[1])[0]
+        we_count[sel] += 1
+        for d in dates:
+            disp = str(df_g.loc[df_g["Date"]==d, sel].iloc[0]).strip().upper()
+            prev_score = scores.get(sel, 0)
+            pts = points_map.get(d, 0)
+            scores[sel] = prev_score + pts
+            history[sel].append(d)
+            rec = {
+                "Date": d,
+                "Médecin": sel,
+                "Statut": disp,
+                "nb_OUI": int(df_g.loc[df_g["Date"]==d, "nb_OUI"].iloc[0]),
+                "nb_PRN": int(df_g.loc[df_g["Date"]==d, "nb_PRN"].iloc[0]),
+                "Points jour": pts,
+                "Score avant": prev_score,
+                "Score après": scores[sel],
+                "Type": "WE"
+            }
+            plans.append(rec)
+            logs.append(rec.copy())
+    # Attribution jours simples
+    simple = df_g[df_g["we_id"].isna()].sort_values(["nb_OUI", "nb_PRN", "Points jour"])
+    for _, row in simple.iterrows():
+        d = row["Date"]
+        if any(p["Date"] == d for p in plans): continue
+        cands = []
+        for m in meds:
+            disp = str(row[m]).strip().upper()
+            if disp == "NON": continue
+            if any(abs((d - x).days) < seuil_proximite for x in history[m]): continue
+            base = scores.get(m, 0)
+            bonus = bonus_oui if disp == "OUI" else 0
+            cands.append((m, disp, base - bonus))
+        if cands:
+            sel_m, sel_disp, _ = min(cands, key=lambda x: x[2])
+        else:
+            sel_m, sel_disp = None, None
+        prev_score = scores.get(sel_m, 0) if sel_m else None
+        pts = row["Points jour"]
+        if sel_m:
+            scores[sel_m] = prev_score + pts
+            history[sel_m].append(d)
+        rec = {
+            "Date": d,
+            "Médecin": sel_m,
+            "Statut": sel_disp,
+            "nb_OUI": int(row["nb_OUI"]),
+            "nb_PRN": int(row["nb_PRN"]),
+            "Points jour": pts,
+            "Score avant": prev_score,
+            "Score après": scores.get(sel_m),
+            "Type": "Simple"
+        }
+        plans.append(rec)
+        logs.append(rec.copy())
+    planning_df = pd.DataFrame(plans).sort_values("Date").reset_index(drop=True)
+    log_df = pd.DataFrame(logs)
     pointage_update_df = pointage_df.copy()
     return planning_df, log_df, pointage_update_df
 
@@ -176,7 +274,7 @@ def main():
         st.sidebar.download_button(
             "Télécharger modèle Excel", tpl,
             "template_planning_gardes.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet"
         )
 
     # Paramètres d'affectation
