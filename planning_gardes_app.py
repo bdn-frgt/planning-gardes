@@ -42,7 +42,7 @@ def validate_file(xls):
                 errors.append(f"Colonne manquante dans Période précédente: {col}")
     return errors
 
-# --- Génération du template Excel ---
+# --- Création du template Excel ---
 def create_template_excel(start_date: date,
                           num_weeks: int,
                           periods_ante: int,
@@ -71,7 +71,7 @@ def create_template_excel(start_date: date,
     # Paramètres
     params_df = pd.DataFrame({
         "Paramètre": ["periods_ante","pts_sem_res","pts_sem_nores","pts_we_res","pts_we_nores"],
-        "Valeur": [periods_ante,pts_sem_res,pts_sem_nores,pts_we_res,pts_we_nores]
+        "Valeur": [periods_ante, pts_sem_res, pts_sem_nores, pts_we_res, pts_we_nores]
     })
     # Écriture Excel en mémoire
     output = io.BytesIO()
@@ -87,25 +87,19 @@ def create_template_excel(start_date: date,
 # --- Implémentation complète de generate_planning ---
 def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
                       seuil_proximite=6, max_weekends=1, bonus_oui=5):
-    # Préparation des données
     dispo = dispo_df.copy()
     dispo["Date"] = pd.to_datetime(dispo["Date"])
     meds = DOCTORS
-    # Filtrer soirées + week-ends
     mask = ((dispo["Moment"].str.lower() == "soir") |
             (dispo["Jour"].str.lower().isin(["samedi", "dimanche"])))
     df_g = dispo[mask].copy()
-    # Points par date
     grd = gardes_df.copy(); grd["date"] = pd.to_datetime(grd["date"])
     points_map = grd.set_index("date")["Points"].to_dict()
     df_g["Points jour"] = df_g["Date"].map(points_map).fillna(0).astype(int)
-    # Comptages
     for s in ["OUI","PRN","NON"]:
         df_g[f"nb_{s}"] = df_g[meds].apply(lambda r: sum(str(x).strip().upper()==s for x in r), axis=1)
-    # week-end id
     def weekend_id(d): wd=d.weekday(); return d if wd==4 else (d-timedelta(days=1) if wd==5 else (d-timedelta(days=2) if wd==6 else None))
     df_g["we_id"] = df_g["Date"].apply(weekend_id)
-    # Init scores,historique,count
     scores = pointage_df.set_index("MD")["Score actualisé"].to_dict()
     history = defaultdict(list)
     we_count = defaultdict(int)
@@ -116,10 +110,9 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
             wid = weekend_id(r["Date"])
             if wid: we_count[r["Médecin"]]+=1
     plans=[]; logs=[]
-    # Traiter chaque week-end
+    # Week-ends
     for wid, grp in df_g[df_g["we_id"].notna()].groupby("we_id"):
         dates=sorted(grp["Date"])
-        # candidats respectant cap
         cands=[]
         for m in meds:
             if we_count[m]>=max_weekends: continue
@@ -128,8 +121,7 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
             base=scores[m]; bonus=stats.count("OUI")*bonus_oui
             cands.append((m,base-bonus,stats))
         if not cands: continue
-        sel=min(cands,key=lambda x:x[1])[0]
-        we_count[sel]+=1
+        sel=min(cands,key=lambda x:x[1])[0]; we_count[sel]+=1
         for d in dates:
             disp=str(df_g.loc[df_g["Date"]==d,sel].iloc[0]).strip().upper()
             prev_sc=scores[sel]; pts=points_map.get(d,0)
@@ -144,20 +136,17 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
     simple=df_g[df_g["we_id"].isna()].sort_values(["nb_OUI","nb_PRN","Points jour"])
     for _,row in simple.iterrows():
         d=row["Date"]
-        if any(p["Date"]=d for p in plans): continue
+        if any(p["Date"]==d for p in plans): continue
         cands=[]
         for m in meds:
-            disp=str(row[m]).strip().upper()
+            disp=str(row[m]).strip().upper();
             if disp=="NON": continue
             if any(abs((d-x).days)<seuil_proximite for x in history[m]): continue
             base=scores[m]; bonus=bonus_oui if disp=="OUI" else 0
             cands.append((m,disp,base-bonus))
-        if cands:
-            m_sel,disp_sel,_=min(cands,key=lambda x:x[2])
-        else:
-            m_sel,disp_sel=None,None
-        prev_sc=scores.get(m_sel,0) if m_sel else None
-        pts=row["Points jour"]
+        if cands: m_sel,disp_sel,_=min(cands,key=lambda x:x[2])
+        else: m_sel,disp_sel=None,None
+        prev_sc=scores.get(m_sel,0) if m_sel else None; pts=row["Points jour"]
         if m_sel: scores[m_sel]=prev_sc+pts; history[m_sel].append(d)
         rec={"Date":d,"Médecin":m_sel,"Statut":disp_sel,
              "nb_OUI":int(row["nb_OUI"]),"nb_PRN":int(row["nb_PRN"]),
@@ -166,21 +155,64 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
         plans.append(rec); logs.append(rec.copy())
     planning_df=pd.DataFrame(plans).sort_values("Date").reset_index(drop=True)
     log_df=pd.DataFrame(logs)
-    # Pointage mis à jour (pas modifié ici)
     pointage_update_df=pointage_df.copy()
     return planning_df, log_df, pointage_update_df
 
-# --- Guides et UI ---
+# --- Guides et interface utilisateur ---
 def make_guide_planner():
-    md=("# Guide gestionnaire\n1. Mettre à jour DOCTORS...")
+    md=("# Guide gestionnaire\n1. Mettre à jour DOCTORS...\n...")
     return md.encode('utf-8')
 
 def make_guide_physician():
-    md=("# Guide médecin\n- OUI, PRN, NON...")
+    md=("# Guide médecin\n- OUI, PRN, NON...\n...")
     return md.encode('utf-8')
 
 def main():
     st.title("Planning de gardes optimisé")
-    # ... reste de l'UI inchangé ...
+    with st.sidebar.expander("📖 Guides & Consignes"):
+        st.download_button("Guide gestionnaire (.md)", make_guide_planner(), "guide_gestionnaire.md", "text/markdown")
+        st.download_button("Guide médecin (.md)", make_guide_physician(), "guide_medecin.md", "text/markdown")
+    st.sidebar.header("Modèle Excel d'entrée")
+    start_date=st.sidebar.date_input("Date de début", datetime.today().date())
+    num_weeks=st.sidebar.number_input("Nombre de semaines",1,52,4)
+    periods_ante=st.sidebar.number_input("Périodes antérieures",1,12,12)
+    pts_sem_res=st.sidebar.number_input("Pt sem AVEC rés",0,10,1)
+    pts_sem_nores=st.sidebar.number_input("Pt sem SANS rés",0,10,3)
+    pts_we_res=st.sidebar.number_input("Pt WE AVEC rés",0,10,3)
+    pts_we_nores=st.sidebar.number_input("Pt WE SANS rés",0,10,4)
+    if st.sidebar.button("Générer modèle Excel"):
+        tpl=create_template_excel(start_date,num_weeks,periods_ante,
+                                  pts_sem_res,pts_sem_nores,pts_we_res,pts_we_nores)
+        st.sidebar.download_button("Télécharger modèle Excel",tpl,
+                                   "template_planning_gardes.xlsx",
+                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.sidebar.header("Paramètres d'affectation")
+    seuil=st.sidebar.number_input("Seuil proximité (jours)",1,28,6)
+    max_we=st.sidebar.number_input("Max WE par médecin",0,52,1)
+    bonus_oui=st.sidebar.number_input("Bonus OUI (pts)",0,100,5)
+    uploaded=st.file_uploader("Importer fichier Excel (.xlsx)",type=["xlsx"])
+    if uploaded:
+        xls=pd.ExcelFile(uploaded); errs=validate_file(xls)
+        if errs: st.error("Erreurs de format:\n"+"\n".join(errs)); return
+        dispo=xls.parse("Dispo Période"); pointage=xls.parse("Pointage gardes"); gardes=xls.parse("Gardes résidents")
+        prev=xls.parse("Période précédente") if "Période précédente" in xls.sheet_names else None
+        planning_df,log_df,pointage_update_df=generate_planning(
+            dispo,pointage,gardes,prev,seuil,max_we,bonus_oui
+        )
+        st.subheader("🚑 Planning")
+        st.dataframe(planning_df)
+        buf1=io.BytesIO(); planning_df.to_excel(buf1,index=False); buf1.seek(0)
+        st.download_button("Télécharger planning", buf1,"planning_gardes.xlsx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.subheader("📋 Log détaillé")
+        st.dataframe(log_df)
+        buf2=io.BytesIO(); log_df.to_excel(buf2,index=False); buf2.seek(0)
+        st.download_button("Télécharger log", buf2,"planning_gardes_log.xlsx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.subheader("📊 Pointage")
+        st.dataframe(pointage_update_df)
+        buf3=io.BytesIO(); pointage_update_df.to_excel(buf3,index=False); buf3.seek(0)
+        st.download_button("Télécharger pointage", buf3,"pointage_gardes.xlsx",
+                            "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
 
 if __name__=="__main__": main()
