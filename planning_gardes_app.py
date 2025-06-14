@@ -227,7 +227,7 @@ def make_guide_physician():
 
 def main():
     st.title("Planning de gardes optimisé")
-    with st.sidebar.expander("📖 Guides & Consignes"):
+with st.sidebar.expander("📖 Guides & Consignes"):
     st.download_button(
         "Guide gestionnaire (.pdf)",
         make_guide_planner(),
@@ -241,3 +241,4 @@ def main():
         mime="application/pdf"
     )
 
+st.sidebar.header("Modèle Excel d'entrée")
