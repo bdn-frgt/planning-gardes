@@ -84,7 +84,12 @@ def create_template_excel(start_date: date,
     output.seek(0)
     return output
 
-# --- Génération du planning (stub) ---
+# --- Génération du planning (À REMPLACER) ---
+# Cette fonction est un stub (placeholder) pour éviter les erreurs de syntaxe.
+# Pour activer la logique d'attribution, remplacez tout le contenu de cette fonction
+# par votre ancienne implémentation de generate_planning,
+# celle qui calcule planning_df, log_df et pointage_update_df.
+# Début du stub à supprimer :
 def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
                       seuil_proximite=6, max_weekends=1, bonus_oui=5):
     # TODO: Insérer l'implémentation complète ici
@@ -92,6 +97,9 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
     log_df = pd.DataFrame()
     pointage_update_df = pointage_df.copy()
     return planning_df, log_df, pointage_update_df
+# Fin du stub
+
+# --- Interface utilisateur ---
 
 # --- Guides téléchargeables ---
 def make_guide_planner():
