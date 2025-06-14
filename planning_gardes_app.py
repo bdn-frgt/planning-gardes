@@ -32,97 +32,115 @@ def validate_file(xls):
                 errors.append(f"Colonne manquante dans Période précédente: {col}")
     return errors
 
-# --- Génération planning + rebalance + global weekend grouping ---
+# --- Génération planning + global weekend grouping + rebalance ---
 def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
                       seuil_proximite=6, max_weekends=1, bonus_oui=5):
     # Préparation
     dispo = dispo_df.copy()
     dispo["Date"] = pd.to_datetime(dispo["Date"])
-    # Gardes = soirées + weekends
     mask = ((dispo["Moment"].str.lower() == "soir") |
             (dispo["Jour"].str.lower().isin(["samedi", "dimanche"])))
     df_g = dispo[mask].copy()
     meds = [c for c in df_g.columns if c.startswith("Dr")]
     # Points jour
-    grd = gardes_df.copy(); grd["date"] = pd.to_datetime(grd["date"])
-    pm = grd.set_index("date")["Points"].to_dict()
-    df_g["Points"] = df_g["Date"].map(pm).fillna(0).astype(int)
-    # dispo counts
+    grd = gardes_df.copy()
+    grd["date"] = pd.to_datetime(grd["date"])
+    points_map = grd.set_index("date")["Points"].to_dict()
+    df_g["Points jour"] = df_g["Date"].map(points_map).fillna(0).astype(int)
+    # Comptage
     for s in ["OUI","PRN","NON"]:
         df_g[f"nb_{s}"] = df_g[meds].apply(lambda r: sum(str(x).strip().upper()==s for x in r), axis=1)
     # weekend_id
-    def wid(d): wd=d.weekday(); return d if wd==4 else (d-timedelta(days=1) if wd==5 else (d-timedelta(days=2) if wd==6 else None))
-    df_g["weekend_id"] = df_g["Date"].apply(wid)
-    # séparer jrs simples et groupes
-    df_simple = df_g[df_g["weekend_id"].isna()]
-    df_groups = df_g[df_g["weekend_id"].notna()].copy()
-    # pour chaque weekend, grouper
-    weekend_plans = []
-    for wid_val, grp in df_groups.groupby("weekend_id"):
-        dates = sorted(grp["Date"])
-        # préparer candidats communs
-        candidates = []
-        for m in meds:
-            stats = [str(grp.loc[grp["Date"]==d, m].values[0]).strip().upper() for d in dates]
-            if stats.count("NON")==len(stats): continue
-            base = pointage_df.set_index("MD")["Score actualisé"].to_dict().get(m,0)
-            bonus = stats.count("OUI")*bonus_oui
-            candidates.append((m, stats, base-bonus))
-        if not candidates: continue
-        # choisir min score_mod
-        sel = min(candidates, key=lambda x: x[2])[0]
-        for d in dates:
-            weekend_plans.append({"Date":d, "Médecin":sel, "Group":"WE"})
-    # préparation liste simples
-    df_simple = df_simple.sort_values(["nb_OUI","nb_PRN","Points"])
-    simple_plans = []
+    def weekend_id(d):
+        wd = d.weekday()
+        if wd == 4: return d
+        if wd == 5: return d - timedelta(days=1)
+        if wd == 6: return d - timedelta(days=2)
+        return None
+    df_g["weekend_id"] = df_g["Date"].apply(weekend_id)
+    # Initialisation
     scores = pointage_df.set_index("MD")["Score actualisé"].to_dict()
     history = defaultdict(list)
-    # inclure prev dans history
+    weekend_count = defaultdict(int)
+    # Charger période précédente
     if prev_df is not None:
-        p=prev_df.copy();p["Date"]=pd.to_datetime(p["Date"])
-        for _,r in p.iterrows(): history[r["Médecin"]].append(r["Date"])
-    for _,row in df_simple.iterrows():
-        d=row["Date"]
-        # skip si weekend déjà dans weekend_plans
-        if any(wp["Date"]==d for wp in weekend_plans): continue
-        # cls candidats
-        cands=[]
+        prev = prev_df.copy()
+        prev["Date"] = pd.to_datetime(prev["Date"])
+        for _, r in prev.iterrows():
+            history[r["Médecin"]].append(r["Date"])
+            wid = weekend_id(r["Date"])
+            if wid is not None:
+                weekend_count[r["Médecin"]] += 1
+    # Séparer simples et groupes
+    df_simple = df_g[df_g["weekend_id"].isna()].sort_values(["nb_OUI","nb_PRN","Points jour"])
+    df_group = df_g[df_g["weekend_id"].notna()].copy()
+    # Traitement des week-ends global
+    weekend_plans = []
+    for wid_val, grp in df_group.groupby("weekend_id"):
+        dates = sorted(grp["Date"])
+        # Candidats respectant cap
+        candidates = []
         for m in meds:
-            stp=str(row[m]).strip().upper()
-            if stp=="NON": continue
-            if any(abs((d-x).days)<seuil_proximite for x in history[m]): continue
-            base=scores.get(m,0); bonus=(bonus_oui if stp=="OUI" else 0)
-            cands.append((m,stp,base-bonus))
-        if not cands: sel=(None,None)
-        else: sel=min(cands,key=lambda x:x[2])[0:2]
-        simple_plans.append({"Date":d, "Médecin":sel[0], "Statut":sel[1]})
-        if sel[0]: history[sel[0]].append(d)
-    # combine orders
+            if weekend_count.get(m,0) >= max_weekends: continue
+            stats = [str(grp.loc[grp["Date"]==d, m].values[0]).strip().upper() for d in dates]
+            if stats.count("NON") == len(stats): continue
+            base = scores.get(m,0)
+            bonus = stats.count("OUI") * bonus_oui
+            candidates.append((m, base - bonus))
+        if not candidates: continue
+        sel = min(candidates, key=lambda x: x[1])[0]
+        weekend_count[sel] += 1
+        for d in dates:
+            scores[sel] += points_map.get(d, 0)
+            history[sel].append(d)
+            weekend_plans.append({"Date": d, "Médecin": sel, "Type": "WE"})
+    # Traitement des jours simples
+    simple_plans = []
+    for _, row in df_simple.iterrows():
+        d = row["Date"]
+        if any(wp["Date"] == d for wp in weekend_plans): continue
+        # Candidats OUI/PRN
+        cands = []
+        for m in meds:
+            disp = str(row[m]).strip().upper()
+            if disp == "NON": continue
+            if any(abs((d - x).days) < seuil_proximite for x in history[m]): continue
+            base = scores.get(m,0)
+            bonus = bonus_oui if disp == "OUI" else 0
+            cands.append((m, disp, base - bonus))
+        if not cands:
+            sel = (None, None)
+        else:
+            sel = min(cands, key=lambda x: x[2])[0:2]
+        m_sel, stat = sel if sel else (None, None)
+        scores[m_sel] = scores.get(m_sel,0) + row["Points jour"] if m_sel else scores.get(m_sel,0)
+        history[m_sel].append(d) if m_sel else None
+        simple_plans.append({"Date": d, "Médecin": m_sel, "Type": stat})
+    # Combiner et rebalance
     plans = pd.DataFrame(simple_plans + weekend_plans).sort_values("Date")
-    # rebalance post-process: swap to satisfy OUI/PRN over NON where possible
-    for i,row in plans.iterrows():
-        m=row["Médecin"]; d=row["Date"]
-        statut = next((r for r in df_g.itertuples() if r.Date==d), None)
-        # trouver autre candidate qui prefererait ce jour
-        # omitted for brevity: implement swapping logic
-        pass
-    return plans, pd.DataFrame() , None
+    # TODO: rebalance post-process pour échanger NON vs OUI quand possible
+    return plans, pd.DataFrame(), None
 
-# --- UI ---
+# --- Interface utilisateur ---
 def main():
     st.title("Planning gardes optimisé")
     st.sidebar.header("Paramètres")
-    seuil=st.sidebar.number_input("Seuil prox.",1,28,6)
-    max_we=st.sidebar.number_input("Max WE",0,52,1)
-    bonus=st.sidebar.number_input("Bonus OUI",0,50,5)
-    uploaded=st.file_uploader("Fichier Excel",type=["xlsx"])
+    seuil = st.sidebar.number_input("Seuil proximité (jours)", 1, 28, 6)
+    max_we = st.sidebar.number_input("Max week-ends par médecin", 0, 52, 1)
+    bonus = st.sidebar.number_input("Bonus pour un OUI", 0, 100, 5)
+    uploaded = st.file_uploader("Fichier Excel (.xlsx)", type=["xlsx"])
     if uploaded:
-        xls=pd.ExcelFile(uploaded);
-        err=validate_file(xls)
-        if err: st.error("Erreurs: \n"+"\n".join(err));return
-        dispo=xls.parse("Dispo Période"); pt=xls.parse("Pointage gardes"); gr=xls.parse("Gardes résidents"); prev=xls.parse("Période précédente") if "Période précédente" in xls.sheet_names else None
-        plan,_ ,_=generate_planning(dispo,pt,gr,prev,seuil,max_we,bonus)
+        xls = pd.ExcelFile(uploaded)
+        errs = validate_file(xls)
+        if errs:
+            st.error("Erreurs:\n" + "\n".join(errs))
+            return
+        dispo = xls.parse("Dispo Période")
+        pointage = xls.parse("Pointage gardes")
+        gardes = xls.parse("Gardes résidents")
+        prev = xls.parse("Période précédente") if "Période précédente" in xls.sheet_names else None
+        plan, _, _ = generate_planning(dispo, pointage, gardes, prev, seuil, max_we, bonus)
         st.dataframe(plan)
 
-if __name__=="__main__": main()
+if __name__ == "__main__":
+    main()
