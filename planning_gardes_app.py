@@ -242,3 +242,6 @@ with st.sidebar.expander("📖 Guides & Consignes"):
     )
 
 st.sidebar.header("Modèle Excel d'entrée")
+if __name__ == "__main__":
+    main()
+
