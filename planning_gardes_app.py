@@ -22,41 +22,43 @@ PREV_COLUMNS = {PREV_SHEET: ["Date", "Médecin"]}
 # --- Validation du fichier importé ---
 def validate_file(xls):
     errors = []
-    # Vérifier les feuilles de base
+    # Vérifier la feuille Dispo Période et ses colonnes fixes + au moins une colonne MD
     if "Dispo Période" not in xls.sheet_names:
         errors.append("Feuille manquante: Dispo Période")
-    if "Pointage gardes" not in xls.sheet_names:
-        errors.append("Feuille manquante: Pointage gardes")
-    if "Gardes résidents" not in xls.sheet_names:
-        errors.append("Feuille manquante: Gardes résidents")
-    # Vérifier colonnes de Dispo Période
-    if "Dispo Période" in xls.sheet_names:
+    else:
         df = xls.parse("Dispo Période")
-        for col in ["Jour","Moment","Date"]:
+        for col in ["Jour", "Moment", "Date"]:
             if col not in df.columns:
                 errors.append(f"Colonne manquante dans Dispo Période: {col}")
-        # doit y avoir au moins une colonne médecin en plus
-        extras = [c for c in df.columns if c not in ["Jour","Moment","Date"]]
-        if not extras:
+        meds_cols = [c for c in df.columns if c not in ["Jour", "Moment", "Date"]]
+        if not meds_cols:
             errors.append("Aucune colonne médecin détectée dans Dispo Période")
-    # Vérifier colonnes Pointage gardes
-    if "Pointage gardes" in xls.sheet_names:
+
+    # Vérifier Pointage gardes
+    if "Pointage gardes" not in xls.sheet_names:
+        errors.append("Feuille manquante: Pointage gardes")
+    else:
         dfp = xls.parse("Pointage gardes")
-        for col in ["MD","Score actualisé"]:
+        for col in ["MD", "Score actualisé"]:
             if col not in dfp.columns:
                 errors.append(f"Colonne manquante dans Pointage gardes: {col}")
-    # Vérifier colonnes Gardes résidents
-    if "Gardes résidents" in xls.sheet_names:
+
+    # Vérifier Gardes résidents
+    if "Gardes résidents" not in xls.sheet_names:
+        errors.append("Feuille manquante: Gardes résidents")
+    else:
         dfr = xls.parse("Gardes résidents")
-        for col in ["date","résident","Points"]:
+        for col in ["date", "résident", "Points"]:
             if col not in dfr.columns:
                 errors.append(f"Colonne manquante dans Gardes résidents: {col}")
-    # période précédente
+
+    # Feuille optionnelle Période précédente
     if PREV_SHEET in xls.sheet_names:
         dfprev = xls.parse(PREV_SHEET)
-        for col in ["Date","Médecin"]:
+        for col in ["Date", "Médecin"]:
             if col not in dfprev.columns:
                 errors.append(f"Colonne manquante dans {PREV_SHEET}: {col}")
+
     return errors
 
 # --- Génération du template Excel ---
@@ -138,7 +140,8 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
                       seuil_proximite=6, max_weekends=1, bonus_oui=5):
     dispo = dispo_df.copy()
     dispo["Date"] = pd.to_datetime(dispo["Date"])
-    meds = DOCTORS
+        # Détection dynamique des colonnes médecins
+    meds = [c for c in dispo_df.columns if c not in ["Jour", "Moment", "Date"]]
     mask = (dispo["Moment"].str.lower()=="soir") | dispo["Jour"].str.lower().isin(["samedi","dimanche"])
     df = dispo[mask].copy()
     grd = gardes_df.copy(); grd["date"] = pd.to_datetime(grd["date"])
