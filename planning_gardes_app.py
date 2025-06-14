@@ -274,7 +274,7 @@ def main():
         st.sidebar.download_button(
             "Télécharger modèle Excel", tpl,
             "template_planning_gardes.xlsx",
-            "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet"
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
     # Paramètres d'affectation
@@ -283,49 +283,55 @@ def main():
     max_we = st.sidebar.number_input("Max WE par médecin", 0, 52, 1)
     bonus_oui = st.sidebar.number_input("Bonus pour un OUI (pts)", 0, 100, 5)
 
-    # Import et attribution
-    st.markdown("## Import et attribution")
-    uploaded = st.file_uploader("Importer fichier Excel (.xlsx)", type=["xlsx"])
+    # Import initial et stockage en session
+    uploaded = st.sidebar.file_uploader("Importer fichier Excel (.xlsx)", type=["xlsx"])
     if uploaded:
-        try:
-            xls = pd.ExcelFile(uploaded)
-            errs = validate_file(xls)
-            if errs:
-                st.error("Erreurs de format:\n" + "\n".join(errs))
-                st.stop()
-
-            dispo = xls.parse("Dispo Période")
-            pointage = xls.parse("Pointage gardes")
-            gardes = xls.parse("Gardes résidents")
-            prev = xls.parse("Période précédente") if "Période précédente" in xls.sheet_names else None
-
-            planning_df, log_df, pointage_update_df = generate_planning(
-                dispo, pointage, gardes, prev, seuil, max_we, bonus_oui
-            )
-
-            st.subheader("🚑 Planning")
-            st.dataframe(planning_df)
-            buf1 = io.BytesIO(); planning_df.to_excel(buf1, index=False); buf1.seek(0)
-            st.download_button("Télécharger planning", buf1, "planning_gardes.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-            st.subheader("📋 Log détaillé")
-            st.dataframe(log_df)
-            buf2 = io.BytesIO(); log_df.to_excel(buf2, index=False); buf2.seek(0)
-            st.download_button("Télécharger log", buf2, "planning_gardes_log.xlsx",
-                               "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
-
-            st.subheader("📊 Pointage mis à jour")
-            st.dataframe(pointage_update_df)
-            buf3 = io.BytesIO(); pointage_update_df.to_excel(buf3, index=False); buf3.seek(0)
-            st.download_button("Télécharger pointage", buf3, "pointage_gardes.xlsx",
-                               "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
-
-        except Exception as e:
-            import traceback
-            st.error(f"❌ Erreur interne : {e}")
-            st.text(traceback.format_exc())
+        xls = pd.ExcelFile(uploaded)
+        errs = validate_file(xls)
+        if errs:
+            st.sidebar.error("Erreurs de format :
+" + "
+".join(errs))
             st.stop()
+        st.session_state['dispo'] = xls.parse("Dispo Période")
+        st.session_state['pointage'] = xls.parse("Pointage gardes")
+        st.session_state['gardes'] = xls.parse("Gardes résidents")
+        st.session_state['prev'] = (xls.parse("Période précédente")
+                                    if "Période précédente" in xls.sheet_names else None)
+
+    # Bouton de recalcul
+    if 'dispo' in st.session_state:
+        if st.sidebar.button("Recalculer le planning"):
+            planning_df, log_df, pt_update_df = generate_planning(
+                st.session_state['dispo'],
+                st.session_state['pointage'],
+                st.session_state['gardes'],
+                st.session_state['prev'],
+                seuil, max_we, bonus_oui
+            )
+            st.session_state['planning'] = planning_df
+            st.session_state['log'] = log_df
+            st.session_state['pt_update'] = pt_update_df
+
+    # Affichage des résultats
+    if 'planning' in st.session_state:
+        st.subheader("🚑 Planning")
+        st.dataframe(st.session_state['planning'])
+        buf1 = io.BytesIO(); st.session_state['planning'].to_excel(buf1, index=False); buf1.seek(0)
+        st.download_button("Télécharger planning", buf1, "planning_gardes.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        st.subheader("📋 Log détaillé")
+        st.dataframe(st.session_state['log'])
+        buf2 = io.BytesIO(); st.session_state['log'].to_excel(buf2, index=False); buf2.seek(0)
+        st.download_button("Télécharger log", buf2, "planning_gardes_log.xlsx",
+                           "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
+
+        st.subheader("📊 Pointage mis à jour")
+        st.dataframe(st.session_state['pt_update'])
+        buf3 = io.BytesIO(); st.session_state['pt_update'].to_excel(buf3, index=False); buf3.seek(0)
+        st.download_button("Télécharger pointage", buf3, "pointage_gardes.xlsx",
+                           "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
 
 if __name__ == "__main__":
     main()
