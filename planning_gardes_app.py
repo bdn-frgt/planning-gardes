@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 from collections import defaultdict
 import io
+from reportlab.pdfgen import canvas as pdf_canvas
 
 # --- Configuration ---
 # Liste des médecins - copiez-collez vos noms EXACTEMENT entre guillemets, séparés par des virgules
@@ -64,8 +65,8 @@ def create_template_excel(start_date: date,
         dispo_df[m] = "PRN"
     # Pointage gardes
     pt_df = pd.DataFrame({"MD": docs, "Score actualisé": [0] * len(docs)})
-    # Gardes résidents (vide)
-    gard_res_df = pd.DataFrame(columns=["date", "Points"])
+    # Gardes résidents (prérempli dates)
+    gard_res_df = pd.DataFrame({"date": dates, "Points": ["" for _ in dates]})
     # Période précédente (vide)
     prev_df = pd.DataFrame(columns=["Date", "Médecin"])
     # Paramètres
@@ -73,14 +74,33 @@ def create_template_excel(start_date: date,
         "Paramètre": ["periods_ante","pts_sem_res","pts_sem_nores","pts_we_res","pts_we_nores"],
         "Valeur": [periods_ante, pts_sem_res, pts_sem_nores, pts_we_res, pts_we_nores]
     })
-    # Écriture Excel en mémoire
+    # Écriture Excel en mémoire avec validation
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        # Write sheets
         dispo_df.to_excel(writer, sheet_name="Dispo Période", index=False)
         pt_df.to_excel(writer, sheet_name="Pointage gardes", index=False)
         gard_res_df.to_excel(writer, sheet_name="Gardes résidents", index=False)
         prev_df.to_excel(writer, sheet_name="Période précédente", index=False)
         params_df.to_excel(writer, sheet_name="Paramètres", index=False)
+        # Add data validation for OUI/PRN/NON in Dispo Période
+        workbook  = writer.book
+        worksheet = writer.sheets["Dispo Période"]
+        # Determine the range rows: from row 2 to row total_days+1
+        first_row = 1  # zero-indexed, header at row 0
+        last_row = total_days  # zero-indexed includes header shift
+        # Columns: after 'Date', doctors start at index 3
+        for idx, doc in enumerate(docs, start=3):
+            col_letter = chr(ord('A') + idx)
+            worksheet.data_validation(
+                f"{col_letter}2:{col_letter}{total_days+1}",
+                {
+                    'validate': 'list',
+                    'source': ['OUI', 'PRN', 'NON'],
+                    'input_title': 'Disponibilité',
+                    'input_message': 'Choisissez OUI, PRN ou NON'
+                }
+            )
     output.seek(0)
     return output
 
@@ -159,60 +179,65 @@ def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
     return planning_df, log_df, pointage_update_df
 
 # --- Guides et interface utilisateur ---
+# Génération d'un PDF guide pour le gestionnaire
 def make_guide_planner():
-    md=("# Guide gestionnaire\n1. Mettre à jour DOCTORS...\n...")
-    return md.encode('utf-8')
+    packet = io.BytesIO()
+    c = pdf_canvas.Canvas(packet)
+    text = c.beginText(40, 800)
+    for line in [
+        "Guide du gestionnaire de planning",
+        "1. Mettez à jour la liste DOCTORS en haut du script.",
+        "2. Cliquez sur 'Générer modèle Excel' et envoyez-le aux médecins.",
+        "3. Importez le fichier rempli, ajustez les paramètres sur la barre latérale.",
+        "4. Téléchargez le planning, le log et le pointage.",
+        "",
+        "Principes :",
+        "- Équité des scores (pointage moyen)",
+        "- Priorité aux OUI",
+        "- Exclusion des NON",
+        "- Cap des week-ends par médecin"
+    ]:
+        text.textLine(line)
+    c.drawText(text)
+    c.showPage()
+    c.save()
+    packet.seek(0)
+    return packet.getvalue()
 
+# Génération d'un PDF guide pour le médecin
 def make_guide_physician():
-    md=("# Guide médecin\n- OUI, PRN, NON...\n...")
-    return md.encode('utf-8')
+    packet = io.BytesIO()
+    c = pdf_canvas.Canvas(packet)
+    text = c.beginText(40, 800)
+    for line in [
+        "Guide du médecin pour saisie des disponibilités",
+        "- OUI : vous préférez absolument cette date.",
+        "- PRN : disponible au besoin.",
+        "- NON : éviter cette date.",
+        "",
+        "Le planning respecte vos choix tout en garantissant l'équité."
+    ]:
+        text.textLine(line)
+    c.drawText(text)
+    c.showPage()
+    c.save()
+    packet.seek(0)
+    return packet.getvalue()
+
 
 def main():
     st.title("Planning de gardes optimisé")
     with st.sidebar.expander("📖 Guides & Consignes"):
-        st.download_button("Guide gestionnaire (.md)", make_guide_planner(), "guide_gestionnaire.md", "text/markdown")
-        st.download_button("Guide médecin (.md)", make_guide_physician(), "guide_medecin.md", "text/markdown")
-    st.sidebar.header("Modèle Excel d'entrée")
-    start_date=st.sidebar.date_input("Date de début", datetime.today().date())
-    num_weeks=st.sidebar.number_input("Nombre de semaines",1,52,4)
-    periods_ante=st.sidebar.number_input("Périodes antérieures",1,12,12)
-    pts_sem_res=st.sidebar.number_input("Pt sem AVEC rés",0,10,1)
-    pts_sem_nores=st.sidebar.number_input("Pt sem SANS rés",0,10,3)
-    pts_we_res=st.sidebar.number_input("Pt WE AVEC rés",0,10,3)
-    pts_we_nores=st.sidebar.number_input("Pt WE SANS rés",0,10,4)
-    if st.sidebar.button("Générer modèle Excel"):
-        tpl=create_template_excel(start_date,num_weeks,periods_ante,
-                                  pts_sem_res,pts_sem_nores,pts_we_res,pts_we_nores)
-        st.sidebar.download_button("Télécharger modèle Excel",tpl,
-                                   "template_planning_gardes.xlsx",
-                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.sidebar.header("Paramètres d'affectation")
-    seuil=st.sidebar.number_input("Seuil proximité (jours)",1,28,6)
-    max_we=st.sidebar.number_input("Max WE par médecin",0,52,1)
-    bonus_oui=st.sidebar.number_input("Bonus OUI (pts)",0,100,5)
-    uploaded=st.file_uploader("Importer fichier Excel (.xlsx)",type=["xlsx"])
-    if uploaded:
-        xls=pd.ExcelFile(uploaded); errs=validate_file(xls)
-        if errs: st.error("Erreurs de format:\n"+"\n".join(errs)); return
-        dispo=xls.parse("Dispo Période"); pointage=xls.parse("Pointage gardes"); gardes=xls.parse("Gardes résidents")
-        prev=xls.parse("Période précédente") if "Période précédente" in xls.sheet_names else None
-        planning_df,log_df,pointage_update_df=generate_planning(
-            dispo,pointage,gardes,prev,seuil,max_we,bonus_oui
-        )
-        st.subheader("🚑 Planning")
-        st.dataframe(planning_df)
-        buf1=io.BytesIO(); planning_df.to_excel(buf1,index=False); buf1.seek(0)
-        st.download_button("Télécharger planning", buf1,"planning_gardes.xlsx",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.subheader("📋 Log détaillé")
-        st.dataframe(log_df)
-        buf2=io.BytesIO(); log_df.to_excel(buf2,index=False); buf2.seek(0)
-        st.download_button("Télécharger log", buf2,"planning_gardes_log.xlsx",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.subheader("📊 Pointage")
-        st.dataframe(pointage_update_df)
-        buf3=io.BytesIO(); pointage_update_df.to_excel(buf3,index=False); buf3.seek(0)
-        st.download_button("Télécharger pointage", buf3,"pointage_gardes.xlsx",
-                            "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
+    st.download_button(
+        "Guide gestionnaire (.pdf)",
+        make_guide_planner(),
+        file_name="guide_gestionnaire.pdf",
+        mime="application/pdf"
+    )
+    st.download_button(
+        "Guide médecin (.pdf)",
+        make_guide_physician(),
+        file_name="guide_medecin.pdf",
+        mime="application/pdf"
+    )
 
-if __name__=="__main__": main()
