@@ -92,10 +92,10 @@ def create_template_excel(start_date: date,
     output.seek(0)
     return output
 
-# --- Implémentation de generate_planning ---
+# --- Implémentation de generate_planning (placeholder) ---
 def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
                       seuil_proximite=6, max_weekends=1, bonus_oui=5):
-    # Placeholder simple : remplacez par votre vraie logique d’attribution
+    # Remplacez ce bloc par votre logique d'attribution complète
     planning_df = pd.DataFrame()
     log_df = pd.DataFrame()
     pointage_update_df = pointage_df.copy()
@@ -107,7 +107,7 @@ def make_guide_planner():
     c = pdf_canvas.Canvas(packet)
     text = c.beginText(40, 800)
     for line in [
-        "Guide gestionnaire de planning",
+        "Guide du gestionnaire de planning",
         "1. Mettez à jour DOCTORS en haut du script.",
         "2. Générez le modèle Excel et envoyez-le.",
         "3. Importez, ajustez les paramètres.",
@@ -130,7 +130,7 @@ def make_guide_physician():
         "- OUI : préférence forte",
         "- PRN : disponible au besoin",
         "- NON : éviter cette date",
-        "", "Le planning garantit vos choix et l'équité."
+        "", "Le planning garantit vos choix tout en garantissant l'équité."
     ]:
         text.textLine(line)
     c.drawText(text)
@@ -193,9 +193,7 @@ def main():
             xls = pd.ExcelFile(uploaded)
             errs = validate_file(xls)
             if errs:
-                st.error("Erreurs de format:
-" + "
-".join(errs))
+                st.error("Erreurs de format:\n" + "\n".join(errs))
                 st.stop()
 
             dispo = xls.parse("Dispo Période")
@@ -232,5 +230,4 @@ def main():
             st.stop()
 
 if __name__ == "__main__":
-    main()
     main()
