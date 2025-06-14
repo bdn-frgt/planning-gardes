@@ -107,9 +107,14 @@ def create_template_excel(start_date: date,
     output.seek(0)
     return output
 
-# --- Génération du planning et mise à jour du pointage (inchangé) ---
-def generate_planning(...):
-    # Votre code existant ici
+# --- Génération du planning et mise à jour du pointage ---
+def generate_planning(dispo_df, pointage_df, gardes_df, prev_df=None,
+                      seuil_proximite=6, max_weekends=1, bonus_oui=5):
+    # TODO: Insérer ici l’implémentation complète de generate_planning
+    # Stub minimal pour éviter les erreurs de syntaxe
+    planning_df = pd.DataFrame()
+    log_df = pd.DataFrame()
+    pointage_update_df = pointage_df.copy()
     return planning_df, log_df, pointage_update_df
 
 # --- Interface utilisateur ---
