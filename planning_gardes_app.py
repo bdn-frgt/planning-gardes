@@ -22,18 +22,40 @@ PREV_COLUMNS = {PREV_SHEET: ["Date", "Médecin"]}
 # --- Validation du fichier importé ---
 def validate_file(xls):
     errors = []
-    for sheet, cols in REQUIRED_COLUMNS.items():
-        if sheet not in xls.sheet_names:
-            errors.append(f"Feuille manquante: {sheet}")
-        else:
-            df = xls.parse(sheet)
-            for col in cols:
-                if col not in df.columns:
-                    errors.append(f"Colonne manquante dans {sheet}: {col}")
+    # Vérifier les feuilles de base
+    if "Dispo Période" not in xls.sheet_names:
+        errors.append("Feuille manquante: Dispo Période")
+    if "Pointage gardes" not in xls.sheet_names:
+        errors.append("Feuille manquante: Pointage gardes")
+    if "Gardes résidents" not in xls.sheet_names:
+        errors.append("Feuille manquante: Gardes résidents")
+    # Vérifier colonnes de Dispo Période
+    if "Dispo Période" in xls.sheet_names:
+        df = xls.parse("Dispo Période")
+        for col in ["Jour","Moment","Date"]:
+            if col not in df.columns:
+                errors.append(f"Colonne manquante dans Dispo Période: {col}")
+        # doit y avoir au moins une colonne médecin en plus
+        extras = [c for c in df.columns if c not in ["Jour","Moment","Date"]]
+        if not extras:
+            errors.append("Aucune colonne médecin détectée dans Dispo Période")
+    # Vérifier colonnes Pointage gardes
+    if "Pointage gardes" in xls.sheet_names:
+        dfp = xls.parse("Pointage gardes")
+        for col in ["MD","Score actualisé"]:
+            if col not in dfp.columns:
+                errors.append(f"Colonne manquante dans Pointage gardes: {col}")
+    # Vérifier colonnes Gardes résidents
+    if "Gardes résidents" in xls.sheet_names:
+        dfr = xls.parse("Gardes résidents")
+        for col in ["date","résident","Points"]:
+            if col not in dfr.columns:
+                errors.append(f"Colonne manquante dans Gardes résidents: {col}")
+    # période précédente
     if PREV_SHEET in xls.sheet_names:
-        df_prev = xls.parse(PREV_SHEET)
-        for col in PREV_COLUMNS[PREV_SHEET]:
-            if col not in df_prev.columns:
+        dfprev = xls.parse(PREV_SHEET)
+        for col in ["Date","Médecin"]:
+            if col not in dfprev.columns:
                 errors.append(f"Colonne manquante dans {PREV_SHEET}: {col}")
     return errors
 
