@@ -106,6 +106,8 @@ def create_template_excel(
 
     prev_df = pd.DataFrame(columns=["Date", "Médecin"])
 
+    feries_df = pd.DataFrame({"Date": []})
+    
     params_df = pd.DataFrame(
         {
             "Paramètre": [
@@ -131,6 +133,7 @@ def create_template_excel(
         pt_df.to_excel(writer, sheet_name="Pointage gardes", index=False)
         gard_res_df.to_excel(writer, sheet_name="Gardes résidents", index=False)
         prev_df.to_excel(writer, sheet_name=PREV_SHEET, index=False)
+        feries_df.to_excel(writer, sheet_name="Jours fériés", index=False)
         params_df.to_excel(writer, sheet_name="Paramètres", index=False)
 
         ws_dispo = writer.sheets["Dispo Période"]
@@ -146,9 +149,11 @@ def create_template_excel(
         for i in range(total_days):
             r = i + 2
             formula = (
-                f'=IF(B{r}<>"",'
+                f'=IF(COUNTIF(\'Jours fériés\'!$A:$A,A{r})>0,'
+                f'IF(B{r}<>"",{pts_we_res},{pts_we_nores}),'
+                f'IF(B{r}<>"",'
                 f'IF(WEEKDAY(A{r},2)<=5,{pts_sem_res},{pts_we_res}),'
-                f'IF(WEEKDAY(A{r},2)<=5,{pts_sem_nores},{pts_we_nores}))'
+                f'IF(WEEKDAY(A{r},2)<=5,{pts_sem_nores},{pts_we_nores})))'
             )
             ws_res.write_formula(f"C{r}", formula)
 
