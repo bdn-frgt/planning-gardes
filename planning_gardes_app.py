@@ -298,8 +298,32 @@ def generate_planning(
     logs = []
 
     # Week-ends : attribution groupée vendredi-samedi-dimanche
+    weekend_groups = []
     for wid, group in df[df["we_id"].notna()].groupby("we_id"):
         dates = sorted(group["Date"])
+        hardest_row = group.sort_values(["nb_NON", "Date"], ascending=[False, True]).iloc[0]
+        weekend_groups.append(
+            {
+                "wid": wid,
+                "group": group,
+                "dates": dates,
+                "hardest_date": hardest_row["Date"],
+                "hardest_non": int(hardest_row["nb_NON"]),
+            }
+        )
+
+    # On attribue d'abord les week-ends les plus difficiles
+    weekend_groups = sorted(
+        weekend_groups,
+        key=lambda x: (-x["hardest_non"], x["hardest_date"]),
+    )
+
+    for weekend_info in weekend_groups:
+        wid = weekend_info["wid"]
+        group = weekend_info["group"]
+        dates = weekend_info["dates"]
+        hardest_date = weekend_info["hardest_date"]
+        hardest_non = weekend_info["hardest_non"]
 
         # 1) candidats respectant le cap de week-end
         eligible = [m for m in meds if we_count[m] < max_weekends]
@@ -387,6 +411,8 @@ def generate_planning(
                 "Weekend_oui": best["n_oui"],
                 "Weekend_prn": best["n_prn"],
                 "Weekend_non": best["n_non"],
+                "Weekend_hardest_date": hardest_date,
+                "Weekend_hardest_non": hardest_non,
             }
             plans.append(rec)
             logs.append(rec.copy())
