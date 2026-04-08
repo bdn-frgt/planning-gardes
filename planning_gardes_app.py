@@ -85,7 +85,7 @@ def create_template_excel(
     for d in dates:
         dispo_rows.append(
             {
-                "Jour": d.strftime("%A"),
+                "Jour": ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][d.weekday()],
                 "Moment": "Soir" if d.weekday() < 5 else "",
                 "Date": d,
             }
@@ -106,8 +106,6 @@ def create_template_excel(
 
     prev_df = pd.DataFrame(columns=["Date", "Médecin"])
 
-    feries_df = pd.DataFrame({"Date": []})
-    
     params_df = pd.DataFrame(
         {
             "Paramètre": [
@@ -133,7 +131,6 @@ def create_template_excel(
         pt_df.to_excel(writer, sheet_name="Pointage gardes", index=False)
         gard_res_df.to_excel(writer, sheet_name="Gardes résidents", index=False)
         prev_df.to_excel(writer, sheet_name=PREV_SHEET, index=False)
-        feries_df.to_excel(writer, sheet_name="Jours fériés", index=False)
         params_df.to_excel(writer, sheet_name="Paramètres", index=False)
 
         ws_dispo = writer.sheets["Dispo Période"]
@@ -149,11 +146,9 @@ def create_template_excel(
         for i in range(total_days):
             r = i + 2
             formula = (
-                f'=IF(COUNTIF(\'Jours fériés\'!$A:$A,A{r})>0,'
-                f'IF(B{r}<>"",{pts_we_res},{pts_we_nores}),'
-                f'IF(B{r}<>"",'
+                f'=IF(B{r}<>"",'
                 f'IF(WEEKDAY(A{r},2)<=5,{pts_sem_res},{pts_we_res}),'
-                f'IF(WEEKDAY(A{r},2)<=5,{pts_sem_nores},{pts_we_nores})))'
+                f'IF(WEEKDAY(A{r},2)<=5,{pts_sem_nores},{pts_we_nores}))'
             )
             ws_res.write_formula(f"C{r}", formula)
 
@@ -164,10 +159,45 @@ def create_template_excel(
 # =========================
 # Calcul du pointage mis à jour
 # =========================
-def update_pointage(pointage_df: pd.DataFrame, planning_df: pd.DataFrame) -> pd.DataFrame:
+def update_pointage(
+    pointage_df: pd.DataFrame,
+    planning_df: pd.DataFrame,
+    periods_ante: int = 12,
+) -> pd.DataFrame:
     out = pointage_df.copy()
     if "MD" not in out.columns:
         return out
+
+    current_points = (
+        planning_df.groupby("Médecin")["Points jour"].sum().to_dict()
+        if not planning_df.empty and "Médecin" in planning_df.columns
+        else {}
+    )
+
+    out["Période_actuelle"] = out["MD"].map(current_points).fillna(0)
+
+    excluded = {"MD", "Score actualisé", "Nouveau score", "Périodes_considerées"}
+    historical_cols = [c for c in out.columns if c not in excluded and c != "Période_actuelle"]
+
+    if periods_ante < 0:
+        periods_ante = 0
+
+    kept_historical_cols = historical_cols[-periods_ante:] if historical_cols else []
+    cols_for_average = kept_historical_cols + ["Période_actuelle"]
+
+    numeric_df = pd.DataFrame(index=out.index)
+    for col in cols_for_average:
+        numeric_df[col] = pd.to_numeric(out[col], errors="coerce")
+
+    periods_present = numeric_df.notna().sum(axis=1)
+    total_points = numeric_df.sum(axis=1, skipna=True)
+
+    out["Périodes_considerées"] = periods_present
+    out["Nouveau score"] = out.get("Score actualisé", 0)
+    mask = periods_present > 0
+    out.loc[mask, "Nouveau score"] = total_points[mask] / periods_present[mask]
+
+    return out
 
     current_points = (
         planning_df.groupby("Médecin")["Points jour"].sum().to_dict()
@@ -206,6 +236,7 @@ def generate_planning(
     seuil_proximite: int = 6,
     max_weekends: int = 1,
     bonus_oui: int = 5,
+    periods_ante: int = 12,
 ):
     dispo = dispo_df.copy()
     dispo["Date"] = pd.to_datetime(dispo["Date"])
@@ -214,7 +245,7 @@ def generate_planning(
 
     mask = (
         (dispo["Moment"].fillna("").astype(str).str.lower() == "soir")
-        | dispo["Jour"].fillna("").astype(str).str.lower().isin(["samedi", "dimanche"])
+        | (dispo["Date"].dt.weekday >= 5)
     )
     df = dispo[mask].copy()
 
@@ -242,7 +273,11 @@ def generate_planning(
 
     df["we_id"] = df["Date"].apply(week_id)
 
-    scores = pointage_df.set_index("MD")["Score actualisé"].to_dict()
+    pointage_local = pointage_df.copy()
+    pointage_local["Score actualisé"] = pd.to_numeric(
+        pointage_local["Score actualisé"], errors="coerce"
+    ).fillna(0)
+    scores = pointage_local.set_index("MD")["Score actualisé"].to_dict()
     history = defaultdict(list)
     we_count = defaultdict(int)
 
@@ -262,34 +297,76 @@ def generate_planning(
     plans = []
     logs = []
 
-    # Week-ends
+    # Week-ends : attribution groupée vendredi-samedi-dimanche
     for wid, group in df[df["we_id"].notna()].groupby("we_id"):
         dates = sorted(group["Date"])
 
-        cands = []
-        for m in meds:
-            if we_count[m] < max_weekends:
-                stats = [
-                    str(group.loc[group["Date"] == d, m].iloc[0]).strip().upper()
-                    for d in dates
-                ]
-                if stats.count("NON") < len(stats):
-                    cands.append((m, scores.get(m, 0) - stats.count("OUI") * bonus_oui))
+        # 1) candidats respectant le cap de week-end
+        eligible = [m for m in meds if we_count[m] < max_weekends]
+        if not eligible:
+            # fallback si le cap bloque tout
+            eligible = meds.copy()
 
-        # Fallback si le cap bloque tout
-        if not cands:
-            for m in meds:
-                stats = [
-                    str(group.loc[group["Date"] == d, m].iloc[0]).strip().upper()
-                    for d in dates
-                ]
-                if stats.count("NON") < len(stats):
-                    cands.append((m, scores.get(m, 0)))
+        candidate_rows = []
+        for m in eligible:
+            stats = [
+                str(group.loc[group["Date"] == d, m].iloc[0]).strip().upper()
+                for d in dates
+            ]
+            if stats.count("NON") == len(stats):
+                continue
 
-        if not cands:
+            n_oui = stats.count("OUI")
+            n_prn = stats.count("PRN")
+            n_non = stats.count("NON")
+            base_score = scores.get(m, 0)
+
+            # priorité explicite sur le bloc week-end
+            if n_oui == 3:
+                tier = 0
+            elif n_oui == 2 and n_prn == 1:
+                tier = 1
+            elif n_oui == 2 and n_non == 1:
+                tier = 2
+            elif n_oui == 1 and n_prn == 2:
+                tier = 3
+            elif n_oui == 1 and n_prn == 1 and n_non == 1:
+                tier = 4
+            elif n_prn == 3:
+                tier = 5
+            elif n_prn == 2 and n_non == 1:
+                tier = 6
+            elif n_prn == 1 and n_non == 2:
+                tier = 7
+            else:
+                tier = 8
+
+            # score secondaire : favoriser les OUI mais garder l'équité
+            adjusted_score = base_score - n_oui * bonus_oui
+
+            candidate_rows.append(
+                {
+                    "md": m,
+                    "tier": tier,
+                    "adjusted_score": adjusted_score,
+                    "base_score": base_score,
+                    "stats": stats,
+                    "n_oui": n_oui,
+                    "n_prn": n_prn,
+                    "n_non": n_non,
+                }
+            )
+
+        if not candidate_rows:
             continue
 
-        sel = min(cands, key=lambda x: x[1])[0]
+        # tri principal = qualité globale du week-end, tri secondaire = équité/bonus OUI
+        candidate_rows = sorted(
+            candidate_rows,
+            key=lambda x: (x["tier"], x["adjusted_score"], x["base_score"]),
+        )
+        best = candidate_rows[0]
+        sel = best["md"]
         we_count[sel] += 1
 
         for d in dates:
@@ -306,6 +383,10 @@ def generate_planning(
                 "Score avant": prev_sc,
                 "Score après": scores[sel],
                 "Type": "WE",
+                "Weekend_tier": best["tier"],
+                "Weekend_oui": best["n_oui"],
+                "Weekend_prn": best["n_prn"],
+                "Weekend_non": best["n_non"],
             }
             plans.append(rec)
             logs.append(rec.copy())
@@ -358,7 +439,7 @@ def generate_planning(
 
     planning_df = pd.DataFrame(plans).sort_values("Date").reset_index(drop=True)
     log_df = pd.DataFrame(logs)
-    pointage_update_df = update_pointage(pointage_df, planning_df)
+    pointage_update_df = update_pointage(pointage_df, planning_df, periods_ante=periods_ante)
     return planning_df, log_df, pointage_update_df
 
 
@@ -458,6 +539,15 @@ def main():
         st.session_state["pointage"] = xls.parse("Pointage gardes")
         st.session_state["gardes"] = xls.parse("Gardes résidents")
         st.session_state["prev"] = xls.parse(PREV_SHEET) if PREV_SHEET in xls.sheet_names else None
+        if "Paramètres" in xls.sheet_names:
+            params_df = xls.parse("Paramètres")
+            try:
+                params_map = dict(zip(params_df["Paramètre"], params_df["Valeur"]))
+                st.session_state["periods_ante"] = int(params_map.get("periods_ante", 12))
+            except Exception:
+                st.session_state["periods_ante"] = 12
+        else:
+            st.session_state["periods_ante"] = 12
 
     if "dispo" in st.session_state:
         if st.sidebar.button("Recalculer le planning"):
@@ -469,6 +559,7 @@ def main():
                 seuil,
                 mw,
                 bo,
+                st.session_state.get("periods_ante", 12),
             )
             st.session_state["planning"] = p
             st.session_state["log"] = l
